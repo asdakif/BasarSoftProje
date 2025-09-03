@@ -47,7 +47,6 @@ namespace BasarSoftProje.Controllers
                 return BadRequest(Response<object>.Fail("Invalid WKT"));
 
             var typeVal = string.IsNullOrWhiteSpace(dto.Type) ? "A" : dto.Type.Trim();
-            // Kural: Eğer başka bir şey B tipi LineString ile kesişiyorsa eklenemez
             var blocks = await _uow.Features.IntersectsBlockingAsync(geom);
             if (blocks)
                 return BadRequest(Response<string>.Fail("B tipindeki çizgi ile kesiştiği için eklenemez"));
