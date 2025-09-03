@@ -1,0 +1,801 @@
+import React, { useEffect, useRef, useState } from 'react';
+import Map from 'ol/Map';
+import View from 'ol/View';
+import TileLayer from 'ol/layer/Tile';
+import VectorLayer from 'ol/layer/Vector';
+import VectorSource from 'ol/source/Vector';
+import OSM from 'ol/source/OSM';
+import { fromLonLat, transform } from 'ol/proj';
+import { Point, LineString, Polygon } from 'ol/geom';
+import { Style, Circle, Fill, Stroke } from 'ol/style';
+import { Draw } from 'ol/interaction';
+import Overlay from 'ol/Overlay';
+import { WKT } from 'ol/format';
+import { featureService, BACKEND_ORIGIN } from '../services/api';
+import { FeatureCreateDto, FeatureReadDto } from '../types';
+import FeatureForm from './FeatureForm';
+import { Button, Alert, ButtonGroup, Toast, ToastContainer } from 'react-bootstrap';
+import PhotoUploadModal from './PhotoUploadModal';
+import Select from 'ol/interaction/Select';
+import { click, platformModifierKeyOnly } from 'ol/events/condition';
+
+// YENİ: GeoJSON dönüşümü ve Turf
+import GeoJSON from 'ol/format/GeoJSON';
+import * as turf from '@turf/turf';
+
+// YENİ: Dikdörtgen alan seçimi
+import DragBox from 'ol/interaction/DragBox';
+
+// Yardım: (opsiyonel) OL Feature tipi kullanacaksak:
+import OLFeature from 'ol/Feature';
+
+type DrawType = 'Point' | 'LineString' | 'Polygon';
+
+interface MapComponentProps {
+  selectedFeature?: FeatureReadDto | null;
+  onFeatureDeleted?: () => void;
+}
+
+const MapComponent: React.FC<MapComponentProps> = ({ selectedFeature }) => {
+  const mapRef = useRef<HTMLDivElement>(null);
+  const mapInstanceRef = useRef<Map | null>(null);
+  const vectorSourceRef = useRef<VectorSource | null>(null);
+  const vectorLayerRef = useRef<VectorLayer<VectorSource> | null>(null);
+  const drawInteractionRef = useRef<Draw | null>(null);
+  const popupContainerRef = useRef<HTMLDivElement>(null);
+  const popupContentRef = useRef<HTMLDivElement>(null);
+  const overlayRef = useRef<Overlay | null>(null);
+  const selectInteractionRef = useRef<Select | null>(null);
+
+  // YENİ: Dikdörtgen alan seçimi
+  const dragBoxRef = useRef<DragBox | null>(null);
+
+  const [drawingMode, setDrawingMode] = useState<DrawType | null>(null);
+  const [newFeatureCoords, setNewFeatureCoords] = useState<[number, number][] | null>(null);
+  const [newFeatureType, setNewFeatureType] = useState<DrawType | null>(null);
+  const [showForm, setShowForm] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [toastShow, setToastShow] = useState(false);
+  const [toastMessage, setToastMessage] = useState('');
+
+  // Foto yükleme modalı
+  const [uploadModalOpen, setUploadModalOpen] = useState(false);
+  const [clickedFeatureId, setClickedFeatureId] = useState<number | null>(null);
+
+  const [selectedFeatures, setSelectedFeatures] = useState<OLFeature[]>([]);
+  const [selectMode, setSelectMode] = useState(false);
+
+  // YENİ: Alan seçimi + istatistik ve liste
+  const [areaSelectMode, setAreaSelectMode] = useState(false);
+  const [areaStats, setAreaStats] = useState<null | { points: number; lines: number; polys: number; total: number }>(null);
+  const [areaSelectedFeatures, setAreaSelectedFeatures] = useState<OLFeature[]>([]);
+  const [showAreaList, setShowAreaList] = useState(false);
+
+  // GeoJSON <-> OL dönüşümleri için tek format nesnesi
+  const geojsonFmt = new GeoJSON({
+    dataProjection: 'EPSG:4326',
+    featureProjection: 'EPSG:3857',
+  });
+
+  const turkeyCenter = fromLonLat([35.243322, 38.963745]);
+
+  useEffect(() => {
+    if (!mapRef.current) return;
+
+    const vectorSource = new VectorSource();
+    const vectorLayer = new VectorLayer({
+      source: vectorSource,
+      style: createFeatureStyle,
+    });
+
+    vectorSourceRef.current = vectorSource;
+    vectorLayerRef.current = vectorLayer;
+
+    const map = new Map({
+      target: mapRef.current,
+      layers: [
+        new TileLayer({ source: new OSM() }),
+        vectorLayer,
+      ],
+      view: new View({
+        center: turkeyCenter,
+        zoom: 6,
+        maxZoom: 18,
+        minZoom: 4,
+        projection: 'EPSG:3857',
+      }),
+    });
+
+    if (popupContainerRef.current) {
+      const overlay = new Overlay({
+        element: popupContainerRef.current,
+        autoPan: { animation: { duration: 250 } },
+        positioning: 'bottom-center',
+        offset: [0, -12],
+        stopEvent: true,
+      });
+      map.addOverlay(overlay);
+      overlayRef.current = overlay;
+    }
+
+    map.on('singleclick', (evt) => {
+      const feature = map.forEachFeatureAtPixel(evt.pixel, (f) => f as OLFeature);
+      if (!feature) {
+        overlayRef.current?.setPosition(undefined);
+        
+        return;
+      }
+      const geom = feature.getGeometry();
+      if (!geom) return;
+
+      const view = map.getView();
+      const extent = geom.getExtent();
+
+      if (geom instanceof Point) {
+        const coord = geom.getCoordinates();
+        view.animate({ center: coord, zoom: Math.max(view.getZoom() ?? 6, 14), duration: 300 });
+        overlayRef.current?.setPosition(coord);
+      } else {
+        view.fit(extent, { padding: [60, 60, 60, 60], duration: 300, maxZoom: 17 });
+        overlayRef.current?.setPosition(evt.coordinate);
+      }
+
+      const properties = feature.getProperties();
+      const fid = properties.featureData?.id as number | undefined;
+      setClickedFeatureId(fid ?? null);
+      const photos: string[] | undefined = properties.featureData?.photos;
+      const typeVal: string | undefined = properties.featureData?.type;
+      let photosHtml = '';
+      if (photos && photos.length > 0) {
+        const maxThumbs = Math.min(photos.length, 3);
+        const thumbItems = photos.slice(0, maxThumbs)
+          .map((url) => {
+            if (url.startsWith('http')) {
+              return `<img src="${url}" alt="foto" style="width:80px;height:60px;object-fit:cover;border-radius:6px;border:1px solid #eee;" onerror="this.remove()" />`;
+            }
+            // Normalize to /photos/{fileName}
+            let path = url;
+            if (!path.startsWith('/')) {
+              path = `/photos/${path}`;
+            } else if (!path.startsWith('/photos/')) {
+              path = `/photos${path}`;
+            }
+            const absolute = `${BACKEND_ORIGIN}${path}`;
+            return `<img src="${absolute}" alt="foto" style="width:80px;height:60px;object-fit:cover;border-radius:6px;border:1px solid #eee;" onerror="this.remove()" />`;
+          })
+          .join('');
+        photosHtml = `
+          <div style="margin-top:6px;">
+            <div style="font-size:12px;color:#666;margin-bottom:4px;">Fotoğraflar${photos.length > maxThumbs ? ` (+${photos.length - maxThumbs})` : ''}</div>
+            <div style="display:flex;gap:6px;align-items:center;">${thumbItems}</div>
+          </div>
+        `;
+      }
+      const name = properties.name || properties.featureData?.name || 'İsimsiz Özellik';
+      const type = geom.getType();
+      
+      if (popupContentRef.current) {
+        popupContentRef.current.innerHTML = `
+          <div><b>${name}</b></div>
+          <div><small>Geometri: ${type}</small></div>
+          ${typeVal ? `<div><small>Tip: ${typeVal}</small></div>` : ''}
+          ${photosHtml}
+        `;
+      }
+    });
+
+    mapInstanceRef.current = map;
+
+    return () => {
+      if (mapInstanceRef.current) {
+        mapInstanceRef.current.setTarget(undefined);
+      }
+    };
+  }, []);
+
+  // Konumları yükle
+  useEffect(() => {
+    const loadFeatures = async () => {
+      try {
+        const response = await featureService.getAll();
+        if (response.success && response.data && response.data.items && vectorSourceRef.current) {
+          const wktFormat = new WKT();
+          response.data.items.forEach((featureData: any) => {
+            try {
+              const feature = wktFormat.readFeature(featureData.wkt);
+              const geometry = feature.getGeometry();
+              if (geometry) {
+                geometry.transform('EPSG:4326', 'EPSG:3857');
+              }
+              feature.set('name', featureData.name);
+              feature.set('featureData', featureData);
+              vectorSourceRef.current!.addFeature(feature);
+            } catch (error) {
+              console.error('Error parsing feature:', featureData, error);
+            }
+          });
+        }
+      } catch (error) {
+        console.error('Error loading features:', error);
+      }
+    };
+
+    if (mapInstanceRef.current) {
+      loadFeatures();
+    }
+  }, []);
+
+  // selectedFeature değiştiğinde haritayı güncelle
+  useEffect(() => {
+    if (selectedFeature && mapInstanceRef.current && vectorSourceRef.current) {
+      // Önceki "isSelected" işaretli feature'ları kaldır
+      const features = vectorSourceRef.current.getFeatures();
+      features.forEach(feature => {
+        if (feature.get('isSelected')) {
+          vectorSourceRef.current!.removeFeature(feature);
+        }
+      });
+
+      // Yeni seçili konumu ekle
+      const wktFormat = new WKT();
+      const feature = wktFormat.readFeature(selectedFeature.wkt);
+      const featureGeometry = feature.getGeometry();
+      if (featureGeometry) {
+        featureGeometry.transform('EPSG:4326', 'EPSG:3857');
+      }
+      feature.set('name', selectedFeature.name);
+      feature.set('featureData', selectedFeature);
+      feature.set('isSelected', true);
+      vectorSourceRef.current!.addFeature(feature);
+
+      // Seçili konuma odaklan
+      const geometry = feature.getGeometry();
+      if (geometry) {
+        const view = mapInstanceRef.current.getView();
+        const extent = geometry.getExtent();
+        view.fit(extent, { padding: [60, 60, 60, 60], duration: 300, maxZoom: 17 });
+      }
+    }
+  }, [selectedFeature]);
+
+  const createFeatureStyle = (feature?: any) => {
+    if (feature && feature.get('isSelected')) {
+      return new Style({
+        image: new Circle({
+          radius: 10,
+          fill: new Fill({ color: '#f39c12' }),
+          stroke: new Stroke({ color: '#e67e22', width: 3 }),
+        }),
+        stroke: new Stroke({ color: '#f39c12', width: 4 }),
+        fill: new Fill({ color: 'rgba(243, 156, 18, 0.4)' }),
+      });
+    }
+
+    return new Style({
+      image: new Circle({
+        radius: 8,
+        fill: new Fill({ color: '#3498db' }),
+        stroke: new Stroke({ color: '#2980b9', width: 2 }),
+      }),
+      stroke: new Stroke({ color: '#3498db', width: 3 }),
+      fill: new Fill({ color: 'rgba(52, 152, 219, 0.3)' }),
+    });
+  };
+
+  const startDrawing = (type: DrawType) => {
+    if (!mapInstanceRef.current) return;
+    if (drawInteractionRef.current) {
+      mapInstanceRef.current.removeInteraction(drawInteractionRef.current);
+    }
+    const drawInteraction = new Draw({
+      source: vectorSourceRef.current!,
+      type: type as 'Point' | 'LineString' | 'Polygon',
+    });
+
+    drawInteraction.on('drawend', (event) => {
+      const drawnFeature = event.feature as OLFeature;
+      const geometry = drawnFeature.getGeometry();
+
+      let coordinates: [number, number][] = [];
+
+      if (geometry instanceof Point) {
+        const coords = geometry.getCoordinates();
+        const lonLat = transform(coords, 'EPSG:3857', 'EPSG:4326') as [number, number];
+        coordinates = [lonLat];
+      } else if (geometry instanceof LineString) {
+        const coords = geometry.getCoordinates();
+        coordinates = coords.map(coord => transform(coord, 'EPSG:3857', 'EPSG:4326') as [number, number]);
+      } else if (geometry instanceof Polygon) {
+        const coords = geometry.getCoordinates()[0]; // dış ring
+        coordinates = coords.map(coord => transform(coord, 'EPSG:3857', 'EPSG:4326') as [number, number]);
+      }
+
+      setNewFeatureCoords(coordinates);
+      setNewFeatureType(type);
+      setShowForm(true);
+      setDrawingMode(null);
+      vectorSourceRef.current!.removeFeature(drawnFeature);
+    });
+
+    mapInstanceRef.current.addInteraction(drawInteraction);
+    drawInteractionRef.current = drawInteraction;
+    setDrawingMode(type);
+  };
+
+  const stopDrawing = () => {
+    if (mapInstanceRef.current && drawInteractionRef.current) {
+      mapInstanceRef.current.removeInteraction(drawInteractionRef.current);
+      drawInteractionRef.current = null;
+    }
+    setDrawingMode(null);
+  };
+
+  // Polygon seçimi (Ctrl/Cmd ile çoklu)
+  const toggleSelectMode = () => {
+    if (!mapInstanceRef.current) return;
+
+    if (selectMode) {
+      if (selectInteractionRef.current) {
+        mapInstanceRef.current.removeInteraction(selectInteractionRef.current);
+        selectInteractionRef.current = null;
+      }
+      setSelectedFeatures([]);
+      setSelectMode(false);
+    } else {
+      if (drawingMode) stopDrawing();
+      if (areaSelectMode) toggleAreaSelectMode(); // alan modu açıksa kapat
+
+      const select = new Select({
+        condition: click,
+        addCondition: platformModifierKeyOnly,
+        filter: (feature) => {
+          const geometry = feature.getGeometry();
+          return geometry ? geometry.getType() === 'Polygon' : false;
+        },
+      });
+
+      select.on('select', (event) => {
+        const selected = event.selected as OLFeature[];
+        const deselected = event.deselected as OLFeature[];
+
+        setSelectedFeatures((prev) => {
+          let newSelected = [...prev];
+          selected.forEach((f) => {
+            if (!newSelected.includes(f)) newSelected.push(f);
+          });
+          deselected.forEach((f) => {
+            newSelected = newSelected.filter((x) => x !== f);
+          });
+          return newSelected;
+        });
+      });
+
+      mapInstanceRef.current.addInteraction(select);
+      selectInteractionRef.current = select;
+      setSelectMode(true);
+    }
+  };
+
+  // YENİ: Kesişimi GERÇEKTEN sil (difference)
+  const performIntersectionErase = () => {
+    if (selectedFeatures.length < 2) {
+      setError('En az 2 polygon seçmelisiniz');
+      return;
+    }
+
+    try {
+      const polys = selectedFeatures
+        .map(f => ({ f, g: f.getGeometry() }))
+        .filter(({ g }) => g && g.getType() === 'Polygon');
+
+      if (polys.length < 2) {
+        setError('Kesişim silme için en az 2 polygon seçin.');
+        return;
+      }
+
+      polys.forEach(({ f: currentFeature }, i) => {
+        const currentF = geojsonFmt.writeFeatureObject(currentFeature) as any;
+
+        let othersUnion: any = null;
+        polys.forEach(({ f: otherFeature }, j) => {
+          if (i === j) return;
+          const otherF = geojsonFmt.writeFeatureObject(otherFeature) as any;
+          othersUnion = othersUnion ? turf.union(othersUnion, otherF)! : otherF;
+        });
+
+        if (!othersUnion) return;
+
+        try {
+          // Turf.js difference - sadece tek parametre ile dene
+          const diff = (turf.difference as any)(currentF, othersUnion);
+          if (!diff) {
+            // tamamen siliniyor
+            vectorSourceRef.current?.removeFeature(currentFeature);
+            return;
+          }
+
+          const newOlFeature = geojsonFmt.readFeature(diff) as any;
+          const newGeom = newOlFeature.getGeometry();
+          if (newGeom) {
+            currentFeature.setGeometry(newGeom);
+            currentFeature.set('name', currentFeature.get('name') ?? 'Kesişim Sonrası');
+            currentFeature.set('featureData', {
+              ...(currentFeature.get('featureData') || {}),
+              isEditedByIntersectionErase: true,
+            });
+          }
+        } catch (err) {
+          console.warn('Difference calculation failed for polygon', i);
+        }
+      });
+
+      // Modları sıfırla
+      setSelectedFeatures([]);
+      setSelectMode(false);
+      if (selectInteractionRef.current) {
+        mapInstanceRef.current?.removeInteraction(selectInteractionRef.current);
+        selectInteractionRef.current = null;
+      }
+      setError(null);
+    } catch (err) {
+      console.error('Intersection erase error:', err);
+      setError('Kesişim silme işlemi başarısız oldu');
+    }
+  };
+
+  // YENİ: Dikdörtgen alan seçimi aç/kapat
+  const toggleAreaSelectMode = () => {
+    if (!mapInstanceRef.current) return;
+
+    if (areaSelectMode) {
+      if (dragBoxRef.current) {
+        mapInstanceRef.current.removeInteraction(dragBoxRef.current);
+        dragBoxRef.current = null;
+      }
+      setAreaSelectMode(false);
+      setAreaStats(null);
+      setAreaSelectedFeatures([]);
+      setShowAreaList(false);
+    } else {
+      if (drawingMode) stopDrawing();
+      if (selectMode) {
+        if (selectInteractionRef.current) {
+          mapInstanceRef.current.removeInteraction(selectInteractionRef.current);
+          selectInteractionRef.current = null;
+        }
+        setSelectedFeatures([]);
+        setSelectMode(false);
+      }
+
+      const dragBox = new DragBox({
+        condition: () => true, // fare basılıyken sürükle
+      });
+
+      dragBox.on('boxend', () => {
+        const boxGeom = dragBox.getGeometry(); // Polygon (EPSG:3857)
+        const extent = boxGeom.getExtent();
+
+        const boxGeo = geojsonFmt.writeGeometryObject(boxGeom) as any;
+        let points = 0, lines = 0, polys = 0;
+        const found: OLFeature[] = [];
+
+        // Basit extent kontrolü ile öğeleri bul
+        const seenFeatures = new Set(); // Tekrar eden öğeleri önlemek için
+        
+        vectorSourceRef.current?.forEachFeatureIntersectingExtent(extent, (feature) => {
+          const g = feature.getGeometry();
+          if (!g) return;
+
+          // Aynı öğeyi birden fazla kez eklemeyi önle
+          const featureId = feature.get('featureData')?.id || feature.get('name') || `feature_${Math.random()}`;
+          if (seenFeatures.has(featureId)) return;
+          seenFeatures.add(featureId);
+
+          found.push(feature);
+
+          const type = g.getType();
+          if (type === 'Point') points++;
+          else if (type === 'LineString') lines++;
+          else if (type === 'Polygon') polys++;
+        });
+
+        setAreaSelectedFeatures(found);
+        setAreaStats({ points, lines, polys, total: points + lines + polys });
+      });
+
+      mapInstanceRef.current.addInteraction(dragBox);
+      dragBoxRef.current = dragBox;
+      setAreaSelectMode(true);
+    }
+  };
+
+  const handleCreateFeature = async (featureData: FeatureCreateDto) => {
+    try {
+      setLoading(true);
+      setError(null);
+
+      const response = await featureService.create(featureData);
+
+      if (response.success && response.data) {
+        const wktFormat = new WKT();
+        const feature = wktFormat.readFeature(response.data.wkt);
+        const geometry = feature.getGeometry();
+        if (geometry) {
+          geometry.transform('EPSG:4326', 'EPSG:3857');
+        }
+        const featureName = response.data.name || featureData.name;
+        feature.set('name', featureName);
+        feature.set('featureData', response.data);
+        vectorSourceRef.current?.addFeature(feature);
+
+        // Başarı bildirimi (geometri tipine göre)
+        const gType = geometry?.getType();
+        const tr = gType === 'Point' ? 'Nokta' : gType === 'LineString' ? 'Çizgi' : 'Polygon';
+        setToastMessage(`${tr} eklendi`);
+        setToastShow(true);
+
+        setShowForm(false);
+        setNewFeatureCoords(null);
+        setNewFeatureType(null);
+      } else {
+        setError('Özellik oluşturulurken hata oluştu');
+      }
+    } catch (err) {
+      setError('Özellik oluşturulurken hata oluştu');
+      console.error('Error creating feature:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const getWKTFromCoordinates = (coords: [number, number][], type: DrawType): string => {
+    if (type === 'Point') {
+      return `POINT(${coords[0][0]} ${coords[0][1]})`;
+    } else if (type === 'LineString') {
+      const points = coords.map(coord => `${coord[0]} ${coord[1]}`).join(', ');
+      return `LINESTRING(${points})`;
+    } else if (type === 'Polygon') {
+      const points = coords.map(coord => `${coord[0]} ${coord[1]}`).join(', ');
+      return `POLYGON((${points}))`;
+    }
+    return '';
+  };
+
+  const closePopup = (e: React.MouseEvent) => {
+    e.preventDefault();
+    overlayRef.current?.setPosition(undefined);
+  };
+
+  const olTypeToTr = (t: string) => (t === 'Point' ? 'Nokta' : t === 'LineString' ? 'Çizgi' : t);
+
+  return (
+    <div className="map-container" style={{ width: '100%', height: 'calc(100vh - 56px)', position: 'relative' }}>
+      <div ref={mapRef} className="map" style={{ width: '100%', height: '100%' }} />
+
+      {/* Popup */}
+      <div
+        ref={popupContainerRef}
+        style={{
+          position: 'absolute',
+          backgroundColor: 'white',
+          boxShadow: '0 1px 4px rgba(0,0,0,0.3)',
+          padding: '8px 12px',
+          borderRadius: 8,
+          minWidth: 160,
+          transform: 'translate(-50%, -100%)',
+        }}
+      >
+        <a
+          href="#close"
+          onClick={closePopup}
+          style={{
+            position: 'absolute',
+            right: 6,
+            top: 4,
+            textDecoration: 'none',
+            fontWeight: 'bold',
+            color: '#666',
+          }}
+          aria-label="Kapat"
+          title="Kapat"
+        >
+          ×
+        </a>
+        <div ref={popupContentRef} />
+      </div>
+
+      {/* Sağ üst butonlar */}
+      <div style={{ position: 'absolute', top: '20px', right: '20px', zIndex: 1000 }}>
+        <ButtonGroup vertical>
+          <Button
+            variant="success"
+            onClick={() => setUploadModalOpen(true)}
+            size="sm"
+            disabled={!clickedFeatureId}
+          >
+            Foto Yükle
+          </Button>
+          <Button
+            variant={drawingMode === 'Point' ? 'danger' : 'primary'}
+            onClick={() => (drawingMode === 'Point' ? stopDrawing() : startDrawing('Point'))}
+            size="sm"
+          >
+            {drawingMode === 'Point' ? 'İptal' : 'Nokta'}
+          </Button>
+          
+          <Button
+            variant={drawingMode === 'LineString' ? 'danger' : 'primary'}
+            onClick={() => (drawingMode === 'LineString' ? stopDrawing() : startDrawing('LineString'))}
+            size="sm"
+          >
+            {drawingMode === 'LineString' ? 'İptal' : 'Çizgi'}
+          </Button>
+          <Button
+            variant={drawingMode === 'Polygon' ? 'danger' : 'primary'}
+            onClick={() => (drawingMode === 'Polygon' ? stopDrawing() : startDrawing('Polygon'))}
+            size="sm"
+          >
+            {drawingMode === 'Polygon' ? 'İptal' : 'Polygon'}
+          </Button>
+
+          <Button variant="secondary" onClick={toggleSelectMode} size="sm">
+            {selectMode ? 'Seçim Modunu Kapat' : 'Polygon Kesişim Sil (Seç)'}
+          </Button>
+          {selectMode && selectedFeatures.length > 1 && (
+            <Button variant="danger" onClick={performIntersectionErase} size="sm">
+              Kesişen Kısımları Sil
+            </Button>
+          )}
+
+          <Button
+            variant={areaSelectMode ? 'secondary' : 'primary'}
+            onClick={toggleAreaSelectMode}
+            size="sm"
+          >
+            {areaSelectMode ? 'Alan Seçimi Kapat' : 'Alan Seç (Dikdörtgen)'}
+          </Button>
+
+          {areaStats && (
+            <Button
+              variant={showAreaList ? 'secondary' : 'primary'}
+              onClick={() => setShowAreaList((s) => !s)}
+              size="sm"
+            >
+              {showAreaList ? 'Listeyi Gizle' : 'Seçilenleri Listele'}
+            </Button>
+          )}
+        </ButtonGroup>
+      </div>
+
+      {/* Toast bildirimleri */}
+      <ToastContainer position="top-center" className="p-3" style={{ zIndex: 1100 }}>
+        <Toast bg="success" onClose={() => setToastShow(false)} show={toastShow} delay={3000} autohide>
+          <Toast.Body style={{ color: '#fff', fontWeight: 600 }}>{toastMessage}</Toast.Body>
+        </Toast>
+      </ToastContainer>
+
+      {/* Alan seçimi istatistik paneli */}
+      {areaStats && (
+        <div
+          style={{
+            position: 'absolute',
+            top: '20px',
+            right: '140px',
+            zIndex: 1000,
+            background: 'white',
+            padding: '8px 12px',
+            borderRadius: 8,
+            boxShadow: '0 1px 4px rgba(0,0,0,0.3)',
+            minWidth: 220,
+          }}
+        >
+          <div style={{ fontWeight: 700, marginBottom: 6 }}>Seçili Alandaki Öğeler</div>
+          <div>Nokta: {areaStats.points}</div>
+          <div>Çizgi: {areaStats.lines}</div>
+          <div>Poligon: {areaStats.polys}</div>
+          <hr style={{ margin: '6px 0' }} />
+          <div>
+            <b>Toplam: {areaStats.total}</b>
+          </div>
+        </div>
+      )}
+
+      {/* Alan seçimi: Liste paneli */}
+      {showAreaList && areaSelectedFeatures.length > 0 && (
+        <div
+          style={{
+            position: 'absolute',
+            top: '140px',
+            right: '140px',
+            zIndex: 1000,
+            background: 'white',
+            padding: '8px 12px',
+            borderRadius: 8,
+            boxShadow: '0 1px 4px rgba(0,0,0,0.3)',
+            minWidth: 280,
+            maxHeight: 300,
+            overflowY: 'auto',
+          }}
+        >
+          <div style={{ fontWeight: 700, marginBottom: 6 }}>Seçili Alandaki Öğeler (Liste)</div>
+          {areaSelectedFeatures.map((f, idx) => {
+            const g = f.getGeometry();
+            const t = g?.getType() ?? 'Unknown';
+            const name = f.get('name') || f.get('featureData')?.name || `Öğe ${idx + 1}`;
+            return (
+              <div
+                key={idx}
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  padding: '6px 0',
+                  borderBottom: '1px solid #eee',
+                }}
+              >
+                <span title={name} style={{ maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {name}
+                </span>
+                <span style={{ color: '#666' }}>{olTypeToTr(t)}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {error && (
+        <Alert
+          variant="danger"
+          dismissible
+          onClose={() => setError(null)}
+          style={{
+            position: 'absolute',
+            top: '20px',
+            left: '20px',
+            zIndex: 1000,
+            maxWidth: '400px',
+          }}
+        >
+          {error}
+        </Alert>
+      )}
+
+      <FeatureForm
+        show={showForm}
+        onHide={() => {
+          setShowForm(false);
+          setNewFeatureCoords(null);
+          setNewFeatureType(null);
+        }}
+        onSubmit={handleCreateFeature}
+        coordinates={newFeatureCoords}
+        featureType={newFeatureType}
+        getWKT={getWKTFromCoordinates}
+        loading={loading}
+      />
+
+      <PhotoUploadModal
+        show={uploadModalOpen}
+        onHide={() => setUploadModalOpen(false)}
+        featureId={clickedFeatureId}
+        onUploaded={async () => {
+          if (!clickedFeatureId) return;
+          try {
+            const resp = await featureService.getById(clickedFeatureId);
+            if (resp.success && resp.data && mapInstanceRef.current && vectorSourceRef.current) {
+              const feats = vectorSourceRef.current.getFeatures();
+              feats.forEach(f => {
+                const fd = f.get('featureData');
+                if (fd && fd.id === clickedFeatureId) {
+                  f.set('featureData', resp.data);
+                }
+              });
+            }
+          } catch {}
+        }}
+      />
+    </div>
+  );
+};
+
+export default MapComponent;
