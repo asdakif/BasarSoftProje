@@ -47,6 +47,11 @@ namespace BasarSoftProje.Controllers
                 return BadRequest(Response<object>.Fail("Invalid WKT"));
 
             var typeVal = string.IsNullOrWhiteSpace(dto.Type) ? "A" : dto.Type.Trim();
+            // Kural: Eğer başka bir şey B tipi LineString ile kesişiyorsa eklenemez
+            var blocks = await _uow.Features.IntersectsBlockingAsync(geom);
+            if (blocks)
+                return BadRequest(Response<string>.Fail("B tipindeki çizgi ile kesiştiği için eklenemez"));
+
             var entity = new Feature { Name = dto.Name, Wkt = dto.Wkt, Geometry = geom, Type = typeVal };
             await _uow.Features.AddAsync(entity);
             await _uow.SaveChangesAsync(); 
@@ -175,6 +180,11 @@ namespace BasarSoftProje.Controllers
             f.Wkt = dto.Wkt;
             f.Geometry = geom;
             f.Type = string.IsNullOrWhiteSpace(dto.Type) ? "A" : dto.Type.Trim();
+
+            // Kural: Güncellenen geometri de B tipi çizgi ile kesişemez
+            var blocksUpd = await _uow.Features.IntersectsBlockingAsync(geom, excludeId: f.Id);
+            if (blocksUpd)
+                return BadRequest(Response<string>.Fail("B tipindeki çizgi ile kesiştiği için güncellenemez"));
 
             _uow.Features.Update(f);
             await _uow.SaveChangesAsync();
