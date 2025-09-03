@@ -76,7 +76,7 @@ const FeatureForm: React.FC<FeatureFormProps> = ({
     setNameError('');
     setGeneralError('');
     setShowPreview(false);
-    setTypeVal('');
+    setTypeVal('A');
     onHide();
   };
 

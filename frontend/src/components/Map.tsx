@@ -9,6 +9,9 @@ import { fromLonLat, transform } from 'ol/proj';
 import { Point, LineString, Polygon } from 'ol/geom';
 import { Style, Circle, Fill, Stroke } from 'ol/style';
 import { Draw } from 'ol/interaction';
+import Modify from 'ol/interaction/Modify';
+import Translate from 'ol/interaction/Translate';
+import Collection from 'ol/Collection';
 import Overlay from 'ol/Overlay';
 import { WKT } from 'ol/format';
 import { featureService, BACKEND_ORIGIN } from '../services/api';
@@ -46,6 +49,10 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedFeature }) => {
   const popupContentRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<Overlay | null>(null);
   const selectInteractionRef = useRef<Select | null>(null);
+  const modifyInteractionRef = useRef<Modify | null>(null);
+  const translateInteractionRef = useRef<Translate | null>(null);
+  const lastClickedFeatureRef = useRef<OLFeature | null>(null);
+  const originalGeometryRef = useRef<any>(null);
 
   // YENİ: Dikdörtgen alan seçimi
   const dragBoxRef = useRef<DragBox | null>(null);
@@ -58,6 +65,8 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedFeature }) => {
   const [error, setError] = useState<string | null>(null);
   const [toastShow, setToastShow] = useState(false);
   const [toastMessage, setToastMessage] = useState('');
+  const [toastVariant, setToastVariant] = useState<'success' | 'danger' | 'warning' | 'info'>('success');
+  const [isEditing, setIsEditing] = useState(false);
 
   // Foto yükleme modalı
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
@@ -142,6 +151,17 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedFeature }) => {
       }
 
       const properties = feature.getProperties();
+      // Eğer tıklanan öğe "isSelected" kopyası ise, asıl data-backed öğeyi bul
+      if (feature.get('isSelected')) {
+        const fidSel = properties.featureData?.id as number | undefined;
+        const base = vectorSourceRef.current?.getFeatures().find(f => {
+          const fd = f.get('featureData');
+          return fd && fd.id === fidSel && !f.get('isSelected');
+        }) as any;
+        lastClickedFeatureRef.current = base || feature;
+      } else {
+        lastClickedFeatureRef.current = feature;
+      }
       const fid = properties.featureData?.id as number | undefined;
       setClickedFeatureId(fid ?? null);
       const photos: string[] | undefined = properties.featureData?.photos;
@@ -281,6 +301,139 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedFeature }) => {
       stroke: new Stroke({ color: '#3498db', width: 3 }),
       fill: new Fill({ color: 'rgba(52, 152, 219, 0.3)' }),
     });
+  };
+
+  const startEdit = () => {
+    if (!mapInstanceRef.current || !lastClickedFeatureRef.current) return;
+    // Etkileşim çakışmalarını kapat
+    if (drawingMode) stopDrawing();
+    if (selectMode && selectInteractionRef.current) {
+      mapInstanceRef.current.removeInteraction(selectInteractionRef.current);
+      selectInteractionRef.current = null;
+      setSelectMode(false);
+    }
+    if (areaSelectMode) toggleAreaSelectMode();
+
+    // Seçim için eklenen görsel kopyaları kaldır (ghost kalmasın)
+    const feats = vectorSourceRef.current?.getFeatures() || [];
+    feats
+      .filter(f => f.get('isSelected'))
+      .forEach(f => vectorSourceRef.current?.removeFeature(f));
+
+    const target = lastClickedFeatureRef.current;
+    const features = new Collection<OLFeature>([target]);
+    const modify = new Modify({ features });
+    const translate = new Translate({ features });
+    mapInstanceRef.current.addInteraction(modify);
+    mapInstanceRef.current.addInteraction(translate);
+    modifyInteractionRef.current = modify;
+    translateInteractionRef.current = translate;
+    originalGeometryRef.current = target.getGeometry()?.clone() || null;
+    setIsEditing(true);
+  };
+
+  const stopEdit = () => {
+    if (!mapInstanceRef.current) return;
+    if (modifyInteractionRef.current) {
+      mapInstanceRef.current.removeInteraction(modifyInteractionRef.current);
+      modifyInteractionRef.current = null;
+    }
+    if (translateInteractionRef.current) {
+      mapInstanceRef.current.removeInteraction(translateInteractionRef.current);
+      translateInteractionRef.current = null;
+    }
+    setIsEditing(false);
+  };
+
+  const cancelEdit = () => {
+    const target = lastClickedFeatureRef.current;
+    if (target && originalGeometryRef.current) {
+      target.setGeometry(originalGeometryRef.current);
+    }
+    stopEdit();
+    setToastVariant('info');
+    setToastMessage('Düzenleme iptal edildi');
+    setToastShow(true);
+  };
+
+  const saveEdit = async () => {
+    const target = lastClickedFeatureRef.current;
+    if (!target) return;
+    const geom = target.getGeometry();
+    if (!geom) return;
+    try {
+      setLoading(true);
+      // WKT üretimi için 4326'ya klon dönüştür
+      const writeFmt = new WKT();
+      const geom4326 = geom.clone();
+      (geom4326 as any).transform('EPSG:3857', 'EPSG:4326');
+      const wkt = writeFmt.writeGeometry(geom4326 as any);
+      const fd = target.get('featureData') || {};
+      const id = fd.id as number;
+      const name = fd.name as string;
+      const type = fd.type as string | undefined;
+      const resp = await featureService.update(id, { name, wkt, type });
+      if (resp.success && resp.data) {
+        target.set('featureData', resp.data);
+        setToastVariant('success');
+        setToastMessage('Geometri güncellendi');
+        setToastShow(true);
+        stopEdit();
+      } else {
+        const msg = (resp as any)?.message?.toString() || 'Güncelleme başarısız oldu';
+        setToastVariant('danger');
+        setToastMessage(msg.includes('B tipindeki çizgi') ? 'B tipindeki çizgi ile kesişti. Lütfen farklı bir konuma taşıyın.' : msg);
+        setToastShow(true);
+        // geri al
+        if (originalGeometryRef.current) target.setGeometry(originalGeometryRef.current);
+        stopEdit();
+      }
+    } catch (err: any) {
+      const msg = err?.response?.data?.message?.toString() || 'Güncelleme başarısız oldu';
+      setToastVariant('danger');
+      setToastMessage(msg.includes('B tipindeki çizgi') ? 'B tipindeki çizgi ile kesişti. Lütfen farklı bir konuma taşıyın.' : msg);
+      setToastShow(true);
+      if (originalGeometryRef.current && lastClickedFeatureRef.current) {
+        lastClickedFeatureRef.current.setGeometry(originalGeometryRef.current);
+      }
+      stopEdit();
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const deleteSelected = async () => {
+    const target = lastClickedFeatureRef.current;
+    if (!target) return;
+    try {
+      setLoading(true);
+      const fd = target.get('featureData') || {};
+      const id = fd.id as number | undefined;
+      if (id) {
+        const resp = await featureService.delete(id);
+        if (!resp.success) throw new Error((resp as any)?.message || 'Silme başarısız');
+      }
+      // Haritadan kaldır (hem asıl hem isSelected kopyalar)
+      vectorSourceRef.current?.removeFeature(target);
+      const copies = (vectorSourceRef.current?.getFeatures() || []).filter(f => {
+        const cfd = f.get('featureData');
+        return cfd && id && cfd.id === id;
+      });
+      copies.forEach(f => vectorSourceRef.current?.removeFeature(f));
+      setClickedFeatureId(null);
+      lastClickedFeatureRef.current = null;
+      setToastVariant('success');
+      setToastMessage('Öğe silindi');
+      setToastShow(true);
+      stopEdit();
+    } catch (err: any) {
+      const msg = err?.response?.data?.message?.toString() || err?.message || 'Silme başarısız';
+      setToastVariant('danger');
+      setToastMessage(msg);
+      setToastShow(true);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const startDrawing = (type: DrawType) => {
@@ -533,16 +686,41 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedFeature }) => {
         const gType = geometry?.getType();
         const tr = gType === 'Point' ? 'Nokta' : gType === 'LineString' ? 'Çizgi' : 'Polygon';
         setToastMessage(`${tr} eklendi`);
+        setToastVariant('success');
         setToastShow(true);
 
         setShowForm(false);
         setNewFeatureCoords(null);
         setNewFeatureType(null);
       } else {
-        setError('Özellik oluşturulurken hata oluştu');
+        const apiMsg = (response as any)?.message as string | undefined;
+        let msg = apiMsg && apiMsg.trim().length > 0 ? apiMsg : 'İşlem başarısız oldu';
+        if (msg.includes('B tipindeki çizgi ile kesiştiği için')) {
+          msg = 'B tipindeki çizgi ile kesişti. Lütfen farklı bir konuma ekleyin.';
+        }
+        setError(msg);
+        setToastVariant('danger');
+        setToastMessage(msg);
+        setToastShow(true);
+        setShowForm(false);
+        setNewFeatureCoords(null);
+        setNewFeatureType(null);
+        overlayRef.current?.setPosition(undefined);
       }
-    } catch (err) {
-      setError('Özellik oluşturulurken hata oluştu');
+    } catch (err: any) {
+      const apiMsg: string | undefined = err?.response?.data?.message;
+      let msg = apiMsg && apiMsg.trim().length > 0 ? apiMsg : 'İşlem başarısız oldu';
+      if (msg.includes('B tipindeki çizgi ile kesiştiği için')) {
+        msg = 'B tipindeki çizgi ile kesişti. Lütfen farklı bir konuma ekleyin.';
+      }
+      setError(msg);
+      setToastVariant('danger');
+      setToastMessage(msg);
+      setToastShow(true);
+      setShowForm(false);
+      setNewFeatureCoords(null);
+      setNewFeatureType(null);
+      overlayRef.current?.setPosition(undefined);
       console.error('Error creating feature:', err);
     } finally {
       setLoading(false);
@@ -639,6 +817,15 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedFeature }) => {
             {drawingMode === 'Polygon' ? 'İptal' : 'Polygon'}
           </Button>
 
+          {/* Alan Seç: çizim butonlarının hemen altında */}
+          <Button
+            variant={areaSelectMode ? 'secondary' : 'primary'}
+            onClick={toggleAreaSelectMode}
+            size="sm"
+          >
+            {areaSelectMode ? 'Alan Seçimi Kapat' : 'Alan Seç'}
+          </Button>
+
           <Button variant="secondary" onClick={toggleSelectMode} size="sm">
             {selectMode ? 'Seçim Modunu Kapat' : 'Polygon Kesişim Sil (Seç)'}
           </Button>
@@ -648,13 +835,35 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedFeature }) => {
             </Button>
           )}
 
-          <Button
-            variant={areaSelectMode ? 'secondary' : 'primary'}
-            onClick={toggleAreaSelectMode}
-            size="sm"
-          >
-            {areaSelectMode ? 'Alan Seçimi Kapat' : 'Alan Seç (Dikdörtgen)'}
-          </Button>
+          
+
+          {/* Düzenleme kontrolleri */}
+          {!isEditing && (
+            <Button
+              variant="warning"
+              onClick={startEdit}
+              size="sm"
+              disabled={!lastClickedFeatureRef.current}
+            >
+              Düzenle
+            </Button>
+          )}
+          {isEditing && (
+            <>
+              <Button variant="success" onClick={saveEdit} size="sm" disabled={loading}>Kaydet</Button>
+              <Button variant="secondary" onClick={cancelEdit} size="sm" disabled={loading}>İptal</Button>
+            </>
+          )}
+          {!isEditing && (
+            <Button
+              variant="danger"
+              onClick={deleteSelected}
+              size="sm"
+              disabled={!lastClickedFeatureRef.current || loading}
+            >
+              Sil
+            </Button>
+          )}
 
           {areaStats && (
             <Button
@@ -668,14 +877,16 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedFeature }) => {
         </ButtonGroup>
       </div>
 
+      
+
       {/* Toast bildirimleri */}
       <ToastContainer position="top-center" className="p-3" style={{ zIndex: 1100 }}>
-        <Toast bg="success" onClose={() => setToastShow(false)} show={toastShow} delay={3000} autohide>
+        <Toast bg={toastVariant} onClose={() => setToastShow(false)} show={toastShow} delay={3000} autohide>
           <Toast.Body style={{ color: '#fff', fontWeight: 600 }}>{toastMessage}</Toast.Body>
         </Toast>
       </ToastContainer>
 
-      {/* Alan seçimi istatistik paneli */}
+      {/* Alan seçimi istatistik paneli (üst sağ) */}
       {areaStats && (
         <div
           style={{
@@ -701,7 +912,7 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedFeature }) => {
         </div>
       )}
 
-      {/* Alan seçimi: Liste paneli */}
+      {/* Alan seçimi: Liste paneli (üst sağ) */}
       {showAreaList && areaSelectedFeatures.length > 0 && (
         <div
           style={{
@@ -726,22 +937,48 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedFeature }) => {
             return (
               <div
                 key={idx}
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  padding: '6px 0',
-                  borderBottom: '1px solid #eee',
-                }}
+                style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid #eee' }}
               >
                 <span title={name} style={{ maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {name}
                 </span>
-                <span style={{ color: '#666' }}>{olTypeToTr(t)}</span>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <span style={{ color: '#666' }}>{olTypeToTr(t)}</span>
+                  <Button
+                    size="sm"
+                    variant="outline-primary"
+                    onClick={() => {
+                      const geom = f.getGeometry();
+                      if (!geom || !mapInstanceRef.current) return;
+                      const view = mapInstanceRef.current.getView();
+                      if (geom.getType() === 'Point') {
+                        const coord = (geom as Point).getCoordinates();
+                        view.animate({ center: coord, zoom: Math.max(view.getZoom() ?? 6, 14), duration: 300 });
+                      } else {
+                        const extent = geom.getExtent();
+                        view.fit(extent, { padding: [60, 60, 60, 60], duration: 300, maxZoom: 17 });
+                      }
+                    }}
+                  >
+                    Oraya Götür
+                  </Button>
+                </div>
               </div>
             );
           })}
         </div>
       )}
+
+      {/* Alan Seç butonunu alt sola al */}
+      <div style={{ position: 'absolute', left: '20px', bottom: '20px', zIndex: 1000 }}>
+        <Button
+          variant={areaSelectMode ? 'secondary' : 'primary'}
+          onClick={toggleAreaSelectMode}
+          size="sm"
+        >
+          {areaSelectMode ? 'Alan Seçimi Kapat' : 'Alan Seç'}
+        </Button>
+      </div>
 
       {error && (
         <Alert

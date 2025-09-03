@@ -10,11 +10,20 @@ namespace BasarSoftProje.Infrastructure.Repositories
 
         public async Task<IReadOnlyList<Feature>> IntersectsAsync(Geometry g)
         {
-            // Generic T yerine doğrudan Feature DbSet'i kullanıyoruz
             return await _ctx.Set<Feature>()
                 .AsNoTracking()
                 .Where(f => f.Geometry != null && f.Geometry.Intersects(g))
                 .ToListAsync();
+        }
+
+        public async Task<bool> IntersectsBlockingAsync(Geometry g, int? excludeId = null)
+        {
+            return await _ctx.Set<Feature>()
+                .AsNoTracking()
+                .Where(f => f.Type == "B" && f.Geometry != null && f.Geometry.Intersects(g))
+                .Where(f => f.Wkt != null && f.Wkt.ToUpper().StartsWith("LINESTRING"))
+                .Where(f => excludeId == null || f.Id != excludeId.Value)
+                .AnyAsync();
         }
 
 
