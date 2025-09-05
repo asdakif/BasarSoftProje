@@ -11,6 +11,7 @@
   --info-color: #06b6d4;
   --light-color: #f8fafc;
   --dark-color: #1e293b;
+  --muted-color: #475569;
   --border-color: #e2e8f0;
   --shadow-sm: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
   --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
@@ -20,6 +21,9 @@
   --border-radius-sm: 0.5rem;
   --transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   --transition-fast: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+  --ring: 0 0 0 0.25rem rgba(59, 130, 246, 0.25);
+  --glass-bg: rgba(255, 255, 255, 0.92);
+  --glass-border: rgba(255, 255, 255, 0.25);
 }
 
 * {
@@ -38,6 +42,7 @@ body {
   color: var(--dark-color);
   line-height: 1.6;
   min-height: 100vh;
+  background-attachment: fixed;
 }
 
 /* Alt tarafta görünen yatay mavi scrollbar'ı gizle */
@@ -111,12 +116,12 @@ html, body {
 /* Map Container */
 .map-container {
   position: relative;
-  background: white;
+  background: var(--glass-bg);
   border-radius: var(--border-radius);
   overflow: hidden;
   box-shadow: var(--shadow-xl);
   margin: 1rem;
-  border: 1px solid rgba(255, 255, 255, 0.2);
+  border: 1px solid var(--glass-border);
 }
 
 .map {
@@ -181,6 +186,11 @@ html, body {
   box-shadow: var(--shadow-lg);
 }
 
+.btn:focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+}
+
 .btn:active {
   transform: translateY(-1px);
 }
@@ -226,10 +236,10 @@ html, body {
   border-radius: var(--border-radius);
   box-shadow: var(--shadow-lg);
   transition: var(--transition);
-  background: rgba(255, 255, 255, 0.95);
+  background: var(--glass-bg);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
-  border: 1px solid rgba(255, 255, 255, 0.2);
+  border: 1px solid var(--glass-border);
 }
 
 .card:hover {
@@ -258,7 +268,7 @@ html, body {
 
 .form-control:focus {
   border-color: var(--primary-color);
-  box-shadow: 0 0 0 0.25rem rgba(59, 130, 246, 0.15);
+  box-shadow: var(--ring);
   background: white;
   transform: translateY(-1px);
 }
@@ -277,9 +287,13 @@ html, body {
   border-radius: var(--border-radius);
   border: none;
   box-shadow: var(--shadow-xl);
-  background: rgba(255, 255, 255, 0.95);
+  background: var(--glass-bg);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
+}
+
+.modal-backdrop.show {
+  backdrop-filter: blur(3px);
 }
 
 .modal-header {
@@ -441,14 +455,14 @@ html, body {
 
 /* Popup Styles */
 .map-popup {
-  background: rgba(255, 255, 255, 0.95);
+  background: var(--glass-bg);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
   border-radius: var(--border-radius);
   box-shadow: var(--shadow-xl);
   padding: 1.5rem;
   min-width: 250px;
-  border: 1px solid rgba(255, 255, 255, 0.2);
+  border: 1px solid var(--glass-border);
 }
 
 .popup-close {
@@ -480,6 +494,16 @@ html, body {
   color: var(--primary-color);
   width: 2rem;
   height: 2rem;
+}
+
+/* Toasts */
+.toast {
+  border-radius: var(--border-radius-sm);
+  box-shadow: var(--shadow-lg);
+}
+.toast .toast-body {
+  font-weight: 700;
+  letter-spacing: 0.02em;
 }
 
 /* Statistics Cards */
@@ -540,6 +564,63 @@ html, body {
   .stats-number {
     font-size: 2.5rem;
   }
+}
+
+/* Dark Mode */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --light-color: #0f172a;
+    --dark-color: #e2e8f0;
+    --border-color: #334155;
+    --glass-bg: rgba(30, 41, 59, 0.85);
+    --glass-border: rgba(148, 163, 184, 0.18);
+  }
+  body {
+    background: linear-gradient(135deg, #0f172a 0%, #111827 100%);
+    color: var(--dark-color);
+  }
+  .navbar {
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  }
+  .table tbody tr:hover {
+    background-color: rgba(59, 130, 246, 0.08);
+  }
+}
+
+/* Manual theme overrides via attribute */
+html[data-theme='dark'] {
+  --light-color: #0f172a;
+  --dark-color: #e2e8f0;
+  --border-color: #334155;
+  --glass-bg: rgba(30, 41, 59, 0.85);
+  --glass-border: rgba(148, 163, 184, 0.18);
+}
+html[data-theme='dark'] body {
+  background: linear-gradient(135deg, #0f172a 0%, #111827 100%);
+  color: var(--dark-color);
+}
+html[data-theme='light'] body {
+  background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
+  color: #1e293b;
+}
+
+/* Gallery helpers */
+.photo-gallery-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 12px;
+}
+.photo-gallery-item {
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--shadow-sm);
+}
+.photo-gallery-item img {
+  width: 100%;
+  height: 140px;
+  object-fit: cover;
+  display: block;
 }
 
 /* Animation Classes */

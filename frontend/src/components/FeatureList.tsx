@@ -15,14 +15,20 @@ const FeatureList: React.FC<FeatureListProps> = ({ onFeatureSelect, onFeatureDel
   const [searchTerm, setSearchTerm] = useState('');
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [featureToDelete, setFeatureToDelete] = useState<FeatureReadDto | null>(null);
+  const [sortKey, setSortKey] = useState<'name' | 'type'>('name');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
+  const [total, setTotal] = useState(0);
 
-  const loadFeatures = async (search?: string) => {
+  const loadFeatures = async (search?: string, p: number = page, ps: number = pageSize) => {
     try {
       setLoading(true);
       setError(null);
-      const response = await featureService.getAll(1, 1000, search);
+      const response = await featureService.getAll(p, ps, search);
       if (response.success && response.data) {
         setFeatures(response.data.items || []);
+        setTotal(response.data.total || 0);
       } else {
         setError('Konumlar yüklenirken hata oluştu');
       }
@@ -35,12 +41,41 @@ const FeatureList: React.FC<FeatureListProps> = ({ onFeatureSelect, onFeatureDel
   };
 
   useEffect(() => {
-    loadFeatures();
-  }, []);
+    loadFeatures(searchTerm, page, pageSize);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, pageSize]);
+
+  const sortedFeatures = React.useMemo(() => {
+    const copy = [...features];
+    copy.sort((a, b) => {
+      let va: string = '';
+      let vb: string = '';
+      if (sortKey === 'name') {
+        va = (a.name || '').toLowerCase();
+        vb = (b.name || '').toLowerCase();
+      } else {
+        va = getFeatureTypeText(a.wkt);
+        vb = getFeatureTypeText(b.wkt);
+      }
+      const cmp = va.localeCompare(vb, 'tr');
+      return sortDir === 'asc' ? cmp : -cmp;
+    });
+    return copy;
+  }, [features, sortKey, sortDir]);
+
+  const toggleSort = (key: 'name' | 'type') => {
+    if (sortKey === key) {
+      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortKey(key);
+      setSortDir('asc');
+    }
+  };
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
-    loadFeatures(searchTerm);
+    setPage(1);
+    loadFeatures(searchTerm, 1, pageSize);
   };
 
   const handleDelete = async () => {
@@ -70,12 +105,12 @@ const FeatureList: React.FC<FeatureListProps> = ({ onFeatureSelect, onFeatureDel
     setShowDeleteModal(true);
   };
 
-  const getFeatureTypeText = (wkt: string) => {
+  function getFeatureTypeText(wkt: string): string {
     if (wkt.includes('POINT')) return 'Nokta';
     if (wkt.includes('LINESTRING')) return 'Çizgi';
     if (wkt.includes('POLYGON')) return 'Polygon';
     return 'Bilinmeyen';
-  };
+  }
 
   return (
     <div style={{
@@ -185,13 +220,29 @@ const FeatureList: React.FC<FeatureListProps> = ({ onFeatureSelect, onFeatureDel
                       padding: '16px 12px',
                       fontWeight: '600',
                       color: '#333'
-                    }}>Ad</th>
+                    }}>
+                      <button
+                        onClick={() => toggleSort('name')}
+                        style={{ background: 'transparent', border: 'none', padding: 0, fontWeight: 600, color: '#333', cursor: 'pointer' }}
+                        title="Ada göre sırala"
+                      >
+                        Ad {sortKey === 'name' ? (sortDir === 'asc' ? '▲' : '▼') : ''}
+                      </button>
+                    </th>
                     <th style={{ 
                       border: 'none', 
                       padding: '16px 12px',
                       fontWeight: '600',
                       color: '#333'
-                    }}>Tür</th>
+                    }}>
+                      <button
+                        onClick={() => toggleSort('type')}
+                        style={{ background: 'transparent', border: 'none', padding: 0, fontWeight: 600, color: '#333', cursor: 'pointer' }}
+                        title="Türe göre sırala"
+                      >
+                        Tür {sortKey === 'type' ? (sortDir === 'asc' ? '▲' : '▼') : ''}
+                      </button>
+                    </th>
                     <th style={{ 
                       border: 'none', 
                       padding: '16px 12px',
@@ -201,7 +252,7 @@ const FeatureList: React.FC<FeatureListProps> = ({ onFeatureSelect, onFeatureDel
                   </tr>
                 </thead>
                 <tbody>
-                  {features.map((feature) => (
+                  {sortedFeatures.map((feature) => (
                     <tr key={feature.id} style={{ 
                       borderBottom: '1px solid rgba(0,0,0,0.05)',
                       transition: 'all 0.2s ease'
@@ -275,6 +326,29 @@ const FeatureList: React.FC<FeatureListProps> = ({ onFeatureSelect, onFeatureDel
                   ))}
                 </tbody>
               </Table>
+              {/* Pagination Controls */}
+              <div className="d-flex justify-content-between align-items-center mt-3">
+                <div className="d-flex align-items-center gap-2">
+                  <span style={{ color: '#333', fontWeight: 500 }}>Sayfa Boyutu:</span>
+                  <Form.Select size="sm" style={{ width: 100 }} value={pageSize} onChange={(e) => { setPageSize(parseInt(e.target.value, 10)); setPage(1); }}>
+                    <option value={10}>10</option>
+                    <option value={20}>20</option>
+                    <option value={50}>50</option>
+                    <option value={100}>100</option>
+                  </Form.Select>
+                </div>
+                <div style={{ color: '#333', fontWeight: 500 }}>
+                  Toplam: {total} • Sayfa: {page} / {Math.max(1, Math.ceil(total / pageSize))}
+                </div>
+                <div className="d-flex gap-2">
+                  <Button variant="outline-secondary" size="sm" disabled={page <= 1 || loading} onClick={() => setPage((p) => Math.max(1, p - 1))}>
+                    ← Önceki
+                  </Button>
+                  <Button variant="outline-secondary" size="sm" disabled={page >= Math.ceil(total / pageSize) || loading} onClick={() => setPage((p) => p + 1)}>
+                    Sonraki →
+                  </Button>
+                </div>
+              </div>
             </div>
           )}
         </Card.Body>

@@ -24,6 +24,7 @@ import { FeatureCreateDto, FeatureReadDto } from '../types';
 import FeatureForm from './FeatureForm';
 import { Button, Alert, ButtonGroup, Toast, ToastContainer } from 'react-bootstrap';
 import PhotoUploadModal from './PhotoUploadModal';
+import PhotoGalleryModal from './PhotoGalleryModal';
 // Select interaction kaldırıldı
 // Turf kullanılmıyor
 // YENİ: Dikdörtgen alan seçimi
@@ -54,6 +55,19 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedFeature }) => {
   const lastClickedFeatureRef = useRef<OLFeature | null>(null);
   const originalGeometryRef = useRef<any>(null);
   const jstsParserRef = useRef<any>(null);
+  // Hata bildirimi tekilleştirme
+  const lastErrorMsgRef = useRef<string | null>(null);
+  const lastErrorAtRef = useRef<number>(0);
+
+  const showErrorOnce = (msg: string) => {
+    const now = Date.now();
+    if (lastErrorMsgRef.current === msg && now - lastErrorAtRef.current < 1200) return;
+    lastErrorMsgRef.current = msg;
+    lastErrorAtRef.current = now;
+    setToastVariant('danger');
+    setToastMessage(msg);
+    setToastShow(true);
+  };
 
   // YENİ: Dikdörtgen alan seçimi
   const dragBoxRef = useRef<DragBox | null>(null);
@@ -72,6 +86,10 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedFeature }) => {
   // Foto yükleme modalı
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
   const [clickedFeatureId, setClickedFeatureId] = useState<number | null>(null);
+  // Foto galeri modalı
+  const [galleryOpen, setGalleryOpen] = useState(false);
+  const [galleryPhotos, setGalleryPhotos] = useState<string[]>([]);
+  const [galleryTitle, setGalleryTitle] = useState<string>('Foto Galerisi');
 
   // Kesişim sil özelliği kaldırıldı
 
@@ -84,6 +102,19 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedFeature }) => {
   // GeoJSON kaldırıldı
 
   const turkeyCenter = fromLonLat([35.243322, 38.963745]);
+
+  // Geçici (persist edilmemiş) çizimleri temizle
+  const removeEphemeralFeatures = () => {
+    const src = vectorSourceRef.current;
+    if (!src) return;
+    (src.getFeatures() || [])
+      .filter(f => {
+        const fd = f.get('featureData');
+        const hasId = fd && typeof fd.id === 'number';
+        return !hasId;
+      })
+      .forEach(f => src.removeFeature(f));
+  };
 
   useEffect(() => {
     if (!mapRef.current) return;
@@ -125,6 +156,11 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedFeature }) => {
     }
 
     map.on('singleclick', (evt) => {
+      // Çizim sırasında popup gösterme
+      if (drawingMode) {
+        overlayRef.current?.setPosition(undefined);
+        return;
+      }
       const feature = map.forEachFeatureAtPixel(evt.pixel, (f) => f as OLFeature);
       if (!feature) {
         overlayRef.current?.setPosition(undefined);
@@ -163,41 +199,37 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedFeature }) => {
       const photos: string[] | undefined = properties.featureData?.photos;
       const typeVal: string | undefined = properties.featureData?.type;
       let photosHtml = '';
-      if (photos && photos.length > 0) {
-        const maxThumbs = Math.min(photos.length, 3);
-        const thumbItems = photos.slice(0, maxThumbs)
-          .map((url) => {
-            if (url.startsWith('http')) {
-              return `<img src="${url}" alt="foto" style="width:80px;height:60px;object-fit:cover;border-radius:6px;border:1px solid #eee;" onerror="this.remove()" />`;
-            }
-            // Normalize to /photos/{fileName}
-            let path = url;
-            if (!path.startsWith('/')) {
-              path = `/photos/${path}`;
-            } else if (!path.startsWith('/photos/')) {
-              path = `/photos${path}`;
-            }
-            const absolute = `${BACKEND_ORIGIN}${path}`;
-            return `<img src="${absolute}" alt="foto" style="width:80px;height:60px;object-fit:cover;border-radius:6px;border:1px solid #eee;" onerror="this.remove()" />`;
-          })
-          .join('');
-        photosHtml = `
-          <div style="margin-top:6px;">
-            <div style="font-size:12px;color:#666;margin-bottom:4px;">Fotoğraflar${photos.length > maxThumbs ? ` (+${photos.length - maxThumbs})` : ''}</div>
-            <div style="display:flex;gap:6px;align-items:center;">${thumbItems}</div>
-          </div>
-        `;
-      }
+      // Fotoğrafları popup içinde göstermiyoruz; ayrı modal açacağız
       const name = properties.name || properties.featureData?.name || 'İsimsiz Özellik';
       const type = geom.getType();
       
       if (popupContentRef.current) {
+        const galleryBtn = photos && photos.length > 0
+          ? `<button id="open-gallery-btn" style="margin-top:8px;padding:6px 10px;border-radius:6px;border:none;background:#3498db;color:#fff;font-weight:600;cursor:pointer;">Foto Galerisi</button>`
+          : '';
         popupContentRef.current.innerHTML = `
           <div><b>${name}</b></div>
           <div><small>Geometri: ${type}</small></div>
           ${typeVal ? `<div><small>Tip: ${typeVal}</small></div>` : ''}
-          ${photosHtml}
+          ${galleryBtn}
         `;
+        if (galleryBtn) {
+          const btn = popupContentRef.current.querySelector('#open-gallery-btn') as HTMLButtonElement | null;
+          if (btn) {
+            btn.onclick = () => {
+              // Foto URL'lerini normalize edip modalı aç
+              const normalized = (photos || []).map((url) => {
+                if (url.startsWith('http')) return url;
+                let path = url;
+                if (!path.startsWith('/')) path = `/photos/${path}`; else if (!path.startsWith('/photos/')) path = `/photos${path}`;
+                return `${BACKEND_ORIGIN}${path}`;
+              });
+              setGalleryPhotos(normalized);
+              setGalleryTitle(name || 'Foto Galerisi');
+              setGalleryOpen(true);
+            };
+          }
+        }
       }
     });
 
@@ -324,7 +356,15 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedFeature }) => {
     }
 
     const features = new Collection<OLFeature>([target]);
-    const modify = new Modify({ features });
+    const targetGeomType = target.getGeometry()?.getType();
+    const isLineString = targetGeomType === 'LineString';
+
+    const modify = new Modify({
+      features,
+      // LineString için orta yerden yanlışlıkla vertex eklemeyi/segmenti bükmeyi engelle
+      insertVertexCondition: isLineString ? () => false : undefined,
+      deleteCondition: isLineString ? () => false : undefined,
+    });
     const translate = new Translate({ features });
     mapInstanceRef.current.addInteraction(modify);
     mapInstanceRef.current.addInteraction(translate);
@@ -399,18 +439,14 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedFeature }) => {
         }
       } else {
         const msg = (resp as any)?.message?.toString() || 'Güncelleme başarısız oldu';
-        setToastVariant('danger');
-        setToastMessage(msg.includes('B tipindeki çizgi') ? 'B tipindeki çizgi ile kesişti. Lütfen farklı bir konuma taşıyın.' : msg);
-        setToastShow(true);
+        showErrorOnce(msg.includes('B tipindeki çizgi') ? 'B tipindeki çizgi ile kesişti. Lütfen farklı bir konuma taşıyın.' : msg);
         // geri al
         if (originalGeometryRef.current) target.setGeometry(originalGeometryRef.current);
         stopEdit();
       }
     } catch (err: any) {
       const msg = err?.response?.data?.message?.toString() || 'Güncelleme başarısız oldu';
-      setToastVariant('danger');
-      setToastMessage(msg.includes('B tipindeki çizgi') ? 'B tipindeki çizgi ile kesişti. Lütfen farklı bir konuma taşıyın.' : msg);
-      setToastShow(true);
+      showErrorOnce(msg.includes('B tipindeki çizgi') ? 'B tipindeki çizgi ile kesişti. Lütfen farklı bir konuma taşıyın.' : msg);
       if (originalGeometryRef.current && lastClickedFeatureRef.current) {
         lastClickedFeatureRef.current.setGeometry(originalGeometryRef.current);
       }
@@ -485,10 +521,11 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedFeature }) => {
       setNewFeatureCoords(coordinates);
       setNewFeatureType(type);
       setShowForm(true);
-      // Çizim biter bitmez etkileşimi kaldır: imleç normale dönsün
+      // Çizim bitti: popup'ı kapalı tut
+      overlayRef.current?.setPosition(undefined);
+      // Geçici çizimi kaynakta tutma; form iptal/başarısız olursa kaldırılacak, başarıda backend'den gerçek feature eklenecek
+      // Yine de imleci normale almak için çizimi kapat
       stopDrawing();
-      // Geçici çizimi kaynaktan kaldırıyoruz (form ile backende gönderilecek)
-      vectorSourceRef.current!.removeFeature(drawnFeature);
     });
 
     mapInstanceRef.current.addInteraction(drawInteraction);
@@ -594,6 +631,7 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedFeature }) => {
         setShowForm(false);
         setNewFeatureCoords(null);
         setNewFeatureType(null);
+        removeEphemeralFeatures();
       } else {
         const apiMsg = (response as any)?.message as string | undefined;
         let msg = apiMsg && apiMsg.trim().length > 0 ? apiMsg : 'İşlem başarısız oldu';
@@ -608,6 +646,7 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedFeature }) => {
         setNewFeatureCoords(null);
         setNewFeatureType(null);
         overlayRef.current?.setPosition(undefined);
+        removeEphemeralFeatures();
       }
     } catch (err: any) {
       const apiMsg: string | undefined = err?.response?.data?.message;
@@ -624,6 +663,7 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedFeature }) => {
       setNewFeatureType(null);
       overlayRef.current?.setPosition(undefined);
       console.error('Error creating feature:', err);
+      removeEphemeralFeatures();
     } finally {
       setLoading(false);
     }
@@ -664,6 +704,7 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedFeature }) => {
           borderRadius: 8,
           minWidth: 160,
           transform: 'translate(-50%, -100%)',
+          color: '#000',
         }}
       >
         <a
@@ -675,7 +716,7 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedFeature }) => {
             top: 4,
             textDecoration: 'none',
             fontWeight: 'bold',
-            color: '#666',
+            color: '#000',
           }}
           aria-label="Kapat"
           title="Kapat"
@@ -889,6 +930,8 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedFeature }) => {
           setShowForm(false);
           setNewFeatureCoords(null);
           setNewFeatureType(null);
+          overlayRef.current?.setPosition(undefined);
+          removeEphemeralFeatures();
         }}
         onSubmit={handleCreateFeature}
         coordinates={newFeatureCoords}
@@ -916,6 +959,13 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedFeature }) => {
             }
           } catch {}
         }}
+      />
+
+      <PhotoGalleryModal
+        show={galleryOpen}
+        onHide={() => setGalleryOpen(false)}
+        title={galleryTitle}
+        photos={galleryPhotos}
       />
     </div>
   );
