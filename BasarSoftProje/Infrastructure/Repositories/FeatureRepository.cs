@@ -21,7 +21,10 @@ namespace BasarSoftProje.Infrastructure.Repositories
             return await _ctx.Set<Feature>()
                 .AsNoTracking()
                 .Where(f => f.Type == "B" && f.Geometry != null && f.Geometry.Intersects(g))
-                .Where(f => f.Wkt != null && f.Wkt.ToUpper().StartsWith("LINESTRING"))
+                .Where(f => f.Wkt != null && (
+                    f.Wkt.ToUpper().StartsWith("LINESTRING") ||
+                    f.Wkt.ToUpper().StartsWith("MULTILINESTRING")
+                ))
                 .Where(f => excludeId == null || f.Id != excludeId.Value)
                 .AnyAsync();
         }

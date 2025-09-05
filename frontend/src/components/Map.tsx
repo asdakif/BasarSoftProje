@@ -7,6 +7,11 @@ import VectorSource from 'ol/source/Vector';
 import OSM from 'ol/source/OSM';
 import { fromLonLat, transform } from 'ol/proj';
 import { Point, LineString, Polygon } from 'ol/geom';
+import LinearRing from 'ol/geom/LinearRing';
+import MultiPoint from 'ol/geom/MultiPoint';
+import MultiLineString from 'ol/geom/MultiLineString';
+import MultiPolygon from 'ol/geom/MultiPolygon';
+import GeometryCollection from 'ol/geom/GeometryCollection';
 import { Style, Circle, Fill, Stroke } from 'ol/style';
 import { Draw } from 'ol/interaction';
 import Modify from 'ol/interaction/Modify';
@@ -19,18 +24,13 @@ import { FeatureCreateDto, FeatureReadDto } from '../types';
 import FeatureForm from './FeatureForm';
 import { Button, Alert, ButtonGroup, Toast, ToastContainer } from 'react-bootstrap';
 import PhotoUploadModal from './PhotoUploadModal';
-import Select from 'ol/interaction/Select';
-import { click, platformModifierKeyOnly } from 'ol/events/condition';
-
-// YENİ: GeoJSON dönüşümü ve Turf
-import GeoJSON from 'ol/format/GeoJSON';
-import * as turf from '@turf/turf';
-
+// Select interaction kaldırıldı
+// Turf kullanılmıyor
 // YENİ: Dikdörtgen alan seçimi
 import DragBox from 'ol/interaction/DragBox';
-
 // Yardım: (opsiyonel) OL Feature tipi kullanacaksak:
 import OLFeature from 'ol/Feature';
+// JSTS kaldırıldı (kesişim sil özelliği iptal)
 
 type DrawType = 'Point' | 'LineString' | 'Polygon';
 
@@ -48,11 +48,12 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedFeature }) => {
   const popupContainerRef = useRef<HTMLDivElement>(null);
   const popupContentRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<Overlay | null>(null);
-  const selectInteractionRef = useRef<Select | null>(null);
+  // selectInteraction kaldırıldı
   const modifyInteractionRef = useRef<Modify | null>(null);
   const translateInteractionRef = useRef<Translate | null>(null);
   const lastClickedFeatureRef = useRef<OLFeature | null>(null);
   const originalGeometryRef = useRef<any>(null);
+  const jstsParserRef = useRef<any>(null);
 
   // YENİ: Dikdörtgen alan seçimi
   const dragBoxRef = useRef<DragBox | null>(null);
@@ -72,8 +73,7 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedFeature }) => {
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
   const [clickedFeatureId, setClickedFeatureId] = useState<number | null>(null);
 
-  const [selectedFeatures, setSelectedFeatures] = useState<OLFeature[]>([]);
-  const [selectMode, setSelectMode] = useState(false);
+  // Kesişim sil özelliği kaldırıldı
 
   // YENİ: Alan seçimi + istatistik ve liste
   const [areaSelectMode, setAreaSelectMode] = useState(false);
@@ -81,11 +81,7 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedFeature }) => {
   const [areaSelectedFeatures, setAreaSelectedFeatures] = useState<OLFeature[]>([]);
   const [showAreaList, setShowAreaList] = useState(false);
 
-  // GeoJSON <-> OL dönüşümleri için tek format nesnesi
-  const geojsonFmt = new GeoJSON({
-    dataProjection: 'EPSG:4326',
-    featureProjection: 'EPSG:3857',
-  });
+  // GeoJSON kaldırıldı
 
   const turkeyCenter = fromLonLat([35.243322, 38.963745]);
 
@@ -207,6 +203,8 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedFeature }) => {
 
     mapInstanceRef.current = map;
 
+    // JSTS kaldırıldı (parser oluşturulmayacak)
+
     return () => {
       if (mapInstanceRef.current) {
         mapInstanceRef.current.setTarget(undefined);
@@ -307,11 +305,7 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedFeature }) => {
     if (!mapInstanceRef.current || !lastClickedFeatureRef.current) return;
     // Etkileşim çakışmalarını kapat
     if (drawingMode) stopDrawing();
-    if (selectMode && selectInteractionRef.current) {
-      mapInstanceRef.current.removeInteraction(selectInteractionRef.current);
-      selectInteractionRef.current = null;
-      setSelectMode(false);
-    }
+    // select interaction kaldırıldı
     if (areaSelectMode) toggleAreaSelectMode();
 
     // Seçim için eklenen görsel kopyaları kaldır (ghost kalmasın)
@@ -320,7 +314,15 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedFeature }) => {
       .filter(f => f.get('isSelected'))
       .forEach(f => vectorSourceRef.current?.removeFeature(f));
 
+    // Aynı id'ye sahip olası kopyaları da kaldır (eski hali üst üste görünmesin)
     const target = lastClickedFeatureRef.current;
+    const targetId = target.get('featureData')?.id;
+    if (targetId && vectorSourceRef.current) {
+      (vectorSourceRef.current.getFeatures() || [])
+        .filter(f => f !== target && (f.get('featureData')?.id === targetId))
+        .forEach(f => vectorSourceRef.current?.removeFeature(f));
+    }
+
     const features = new Collection<OLFeature>([target]);
     const modify = new Modify({ features });
     const translate = new Translate({ features });
@@ -354,6 +356,15 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedFeature }) => {
     setToastVariant('info');
     setToastMessage('Düzenleme iptal edildi');
     setToastShow(true);
+    // İptalden sonra eski kopyalar kalmasın
+    if (vectorSourceRef.current && target) {
+      const id = target.get('featureData')?.id;
+      if (id) {
+        (vectorSourceRef.current.getFeatures() || [])
+          .filter(f => f !== target && (f.get('featureData')?.id === id || f.get('isSelected')))
+          .forEach(f => vectorSourceRef.current?.removeFeature(f));
+      }
+    }
   };
 
   const saveEdit = async () => {
@@ -379,6 +390,13 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedFeature }) => {
         setToastMessage('Geometri güncellendi');
         setToastShow(true);
         stopEdit();
+        // Başarılı kayıttan sonra yalnızca tek güncel kopya kalsın
+        if (vectorSourceRef.current) {
+          const id = resp.data.id;
+          (vectorSourceRef.current.getFeatures() || [])
+            .filter(f => f.get('featureData')?.id === id && f !== target)
+            .forEach(f => vectorSourceRef.current?.removeFeature(f));
+        }
       } else {
         const msg = (resp as any)?.message?.toString() || 'Güncelleme başarısız oldu';
         setToastVariant('danger');
@@ -467,7 +485,9 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedFeature }) => {
       setNewFeatureCoords(coordinates);
       setNewFeatureType(type);
       setShowForm(true);
-      setDrawingMode(null);
+      // Çizim biter bitmez etkileşimi kaldır: imleç normale dönsün
+      stopDrawing();
+      // Geçici çizimi kaynaktan kaldırıyoruz (form ile backende gönderilecek)
       vectorSourceRef.current!.removeFeature(drawnFeature);
     });
 
@@ -484,118 +504,9 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedFeature }) => {
     setDrawingMode(null);
   };
 
-  // Polygon seçimi (Ctrl/Cmd ile çoklu)
-  const toggleSelectMode = () => {
-    if (!mapInstanceRef.current) return;
+  // Kesişim sil seçimi kaldırıldı
 
-    if (selectMode) {
-      if (selectInteractionRef.current) {
-        mapInstanceRef.current.removeInteraction(selectInteractionRef.current);
-        selectInteractionRef.current = null;
-      }
-      setSelectedFeatures([]);
-      setSelectMode(false);
-    } else {
-      if (drawingMode) stopDrawing();
-      if (areaSelectMode) toggleAreaSelectMode(); // alan modu açıksa kapat
-
-      const select = new Select({
-        condition: click,
-        addCondition: platformModifierKeyOnly,
-        filter: (feature) => {
-          const geometry = feature.getGeometry();
-          return geometry ? geometry.getType() === 'Polygon' : false;
-        },
-      });
-
-      select.on('select', (event) => {
-        const selected = event.selected as OLFeature[];
-        const deselected = event.deselected as OLFeature[];
-
-        setSelectedFeatures((prev) => {
-          let newSelected = [...prev];
-          selected.forEach((f) => {
-            if (!newSelected.includes(f)) newSelected.push(f);
-          });
-          deselected.forEach((f) => {
-            newSelected = newSelected.filter((x) => x !== f);
-          });
-          return newSelected;
-        });
-      });
-
-      mapInstanceRef.current.addInteraction(select);
-      selectInteractionRef.current = select;
-      setSelectMode(true);
-    }
-  };
-
-  // YENİ: Kesişimi GERÇEKTEN sil (difference)
-  const performIntersectionErase = () => {
-    if (selectedFeatures.length < 2) {
-      setError('En az 2 polygon seçmelisiniz');
-      return;
-    }
-
-    try {
-      const polys = selectedFeatures
-        .map(f => ({ f, g: f.getGeometry() }))
-        .filter(({ g }) => g && g.getType() === 'Polygon');
-
-      if (polys.length < 2) {
-        setError('Kesişim silme için en az 2 polygon seçin.');
-        return;
-      }
-
-      polys.forEach(({ f: currentFeature }, i) => {
-        const currentF = geojsonFmt.writeFeatureObject(currentFeature) as any;
-
-        let othersUnion: any = null;
-        polys.forEach(({ f: otherFeature }, j) => {
-          if (i === j) return;
-          const otherF = geojsonFmt.writeFeatureObject(otherFeature) as any;
-          othersUnion = othersUnion ? turf.union(othersUnion, otherF)! : otherF;
-        });
-
-        if (!othersUnion) return;
-
-        try {
-          // Turf.js difference - sadece tek parametre ile dene
-          const diff = (turf.difference as any)(currentF, othersUnion);
-          if (!diff) {
-            // tamamen siliniyor
-            vectorSourceRef.current?.removeFeature(currentFeature);
-            return;
-          }
-
-          const newOlFeature = geojsonFmt.readFeature(diff) as any;
-          const newGeom = newOlFeature.getGeometry();
-          if (newGeom) {
-            currentFeature.setGeometry(newGeom);
-            currentFeature.set('name', currentFeature.get('name') ?? 'Kesişim Sonrası');
-            currentFeature.set('featureData', {
-              ...(currentFeature.get('featureData') || {}),
-              isEditedByIntersectionErase: true,
-            });
-          }
-        } catch (err) {
-          console.warn('Difference calculation failed for polygon', i);
-        }
-      });
-
-      // Modları sıfırla
-      setSelectedFeatures([]);
-      setSelectMode(false);
-      if (selectInteractionRef.current) {
-        mapInstanceRef.current?.removeInteraction(selectInteractionRef.current);
-        selectInteractionRef.current = null;
-      }
-      setError(null);
-    } catch (err) {
-      console.error('Intersection erase error:', err);
-      setError('Kesişim silme işlemi başarısız oldu');
-    }
-  };
+  // Kesişim silme fonksiyonu kaldırıldı
 
   // YENİ: Dikdörtgen alan seçimi aç/kapat
   const toggleAreaSelectMode = () => {
@@ -612,14 +523,6 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedFeature }) => {
       setShowAreaList(false);
     } else {
       if (drawingMode) stopDrawing();
-      if (selectMode) {
-        if (selectInteractionRef.current) {
-          mapInstanceRef.current.removeInteraction(selectInteractionRef.current);
-          selectInteractionRef.current = null;
-        }
-        setSelectedFeatures([]);
-        setSelectMode(false);
-      }
 
       const dragBox = new DragBox({
         condition: () => true, // fare basılıyken sürükle
@@ -629,7 +532,6 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedFeature }) => {
         const boxGeom = dragBox.getGeometry(); // Polygon (EPSG:3857)
         const extent = boxGeom.getExtent();
 
-        const boxGeo = geojsonFmt.writeGeometryObject(boxGeom) as any;
         let points = 0, lines = 0, polys = 0;
         const found: OLFeature[] = [];
 
@@ -826,14 +728,7 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedFeature }) => {
             {areaSelectMode ? 'Alan Seçimi Kapat' : 'Alan Seç'}
           </Button>
 
-          <Button variant="secondary" onClick={toggleSelectMode} size="sm">
-            {selectMode ? 'Seçim Modunu Kapat' : 'Polygon Kesişim Sil (Seç)'}
-          </Button>
-          {selectMode && selectedFeatures.length > 1 && (
-            <Button variant="danger" onClick={performIntersectionErase} size="sm">
-              Kesişen Kısımları Sil
-            </Button>
-          )}
+          {/* Kesişim silme butonları kaldırıldı */}
 
           
 
@@ -969,16 +864,7 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedFeature }) => {
         </div>
       )}
 
-      {/* Alan Seç butonunu alt sola al */}
-      <div style={{ position: 'absolute', left: '20px', bottom: '20px', zIndex: 1000 }}>
-        <Button
-          variant={areaSelectMode ? 'secondary' : 'primary'}
-          onClick={toggleAreaSelectMode}
-          size="sm"
-        >
-          {areaSelectMode ? 'Alan Seçimi Kapat' : 'Alan Seç'}
-        </Button>
-      </div>
+      {/* Sol alttaki alan seç butonu kaldırıldı */}
 
       {error && (
         <Alert

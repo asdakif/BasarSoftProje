@@ -15,6 +15,7 @@
     "@types/react-dom": "^19.1.8",
     "axios": "^1.11.0",
     "bootstrap": "^5.3.7",
+    "jsts": "^2.12.1",
     "ol": "^10.6.1",
     "react": "^19.1.1",
     "react-bootstrap": "^2.10.10",
