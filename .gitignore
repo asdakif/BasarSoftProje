@@ -39,7 +39,7 @@ frontend/build/
 *.suo
 
 # Backend uploads (served statically; optional to version)
-BasarSoftProje/wwwroot/photos/
+backend/wwwroot/photos/
 
 # Frontend (Node/React)
 frontend/node_modules/
