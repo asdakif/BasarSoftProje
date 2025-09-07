@@ -55,9 +55,17 @@ app.UseCors("AllowReactApp");
 app.UseHttpsRedirection();
 
 app.UseStaticFiles();
+
+// Ensure photos directory exists before configuring the static file provider
+var photosPath = Path.Combine(builder.Environment.ContentRootPath, "wwwroot", "photos");
+if (!Directory.Exists(photosPath))
+{
+    Directory.CreateDirectory(photosPath);
+}
+
 app.UseStaticFiles(new StaticFileOptions
 {
-    FileProvider = new PhysicalFileProvider(Path.Combine(builder.Environment.ContentRootPath, "wwwroot", "photos")),
+    FileProvider = new PhysicalFileProvider(photosPath),
     RequestPath = "/photos"
 });
 

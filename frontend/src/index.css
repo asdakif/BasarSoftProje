@@ -566,43 +566,7 @@ html, body {
   }
 }
 
-/* Dark Mode */
-@media (prefers-color-scheme: dark) {
-  :root {
-    --light-color: #0f172a;
-    --dark-color: #e2e8f0;
-    --border-color: #334155;
-    --glass-bg: rgba(30, 41, 59, 0.85);
-    --glass-border: rgba(148, 163, 184, 0.18);
-  }
-  body {
-    background: linear-gradient(135deg, #0f172a 0%, #111827 100%);
-    color: var(--dark-color);
-  }
-  .navbar {
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
-  }
-  .table tbody tr:hover {
-    background-color: rgba(59, 130, 246, 0.08);
-  }
-}
-
-/* Manual theme overrides via attribute */
-html[data-theme='dark'] {
-  --light-color: #0f172a;
-  --dark-color: #e2e8f0;
-  --border-color: #334155;
-  --glass-bg: rgba(30, 41, 59, 0.85);
-  --glass-border: rgba(148, 163, 184, 0.18);
-}
-html[data-theme='dark'] body {
-  background: linear-gradient(135deg, #0f172a 0%, #111827 100%);
-  color: var(--dark-color);
-}
-html[data-theme='light'] body {
-  background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
-  color: #1e293b;
-}
+/* Dark mode and manual theme overrides removed */
 
 /* Gallery helpers */
 .photo-gallery-grid {
